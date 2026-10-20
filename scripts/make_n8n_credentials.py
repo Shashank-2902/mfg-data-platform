@@ -7,23 +7,14 @@ listed in .gitignore and never committed.
 import json
 import os
 
+from env_file import read_env
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 
 
-def read_env(path):
-    values = {}
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value
-    return values
-
-
 def main():
-    env = read_env(os.path.join(ROOT, ".env"))
+    env = read_env()
 
     credentials = [
         {

@@ -13,10 +13,9 @@ sys.path.append(os.path.join(HERE, "..", "replayer"))
 sys.path.append(os.path.join(HERE, "..", "ingest"))
 
 import data_reader  # noqa: E402
+import env_file  # noqa: E402
 import message_builder  # noqa: E402
 import readings_db  # noqa: E402
-
-DEFAULT_URL = "postgresql://mfg:mfg_local_pw@localhost:5433/mfg"
 
 
 def main():
@@ -26,7 +25,7 @@ def main():
     args = parser.parse_args()
 
     rows = data_reader.read_rows(args.csv)
-    conn = readings_db.connect(os.getenv("DATABASE_URL", DEFAULT_URL))
+    conn = readings_db.connect(env_file.database_url())
 
     new_rows = 0
     for index in range(args.rows):

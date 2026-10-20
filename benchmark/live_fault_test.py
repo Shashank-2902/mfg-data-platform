@@ -16,11 +16,12 @@ import psycopg
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.append(os.path.join(ROOT, "replayer"))
+sys.path.append(os.path.join(ROOT, "scripts"))
 
+import env_file  # noqa: E402
 import fault_injector  # noqa: E402
 import message_builder  # noqa: E402
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://mfg:mfg_local_pw@localhost:5433/mfg")
 ROWS = 1000
 RATE = 10
 FAULT_START_ROW = 200
@@ -95,7 +96,7 @@ def measure(conn, fault):
 
 
 def main():
-    conn = psycopg.connect(DATABASE_URL, autocommit=True)
+    conn = psycopg.connect(env_file.database_url(), autocommit=True)
     results = []
     for fault in ["none", "silence", "sensor_stuck", "out_of_range"]:
         print(f"Running fault: {fault} ...", flush=True)

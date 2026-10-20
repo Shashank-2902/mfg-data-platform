@@ -7,24 +7,25 @@ import pytest
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 # Let the tests import the modules of each service.
-for folder in ["replayer", "ingest", "monitor"]:
+for folder in ["replayer", "ingest", "monitor", "scripts"]:
     sys.path.append(os.path.join(ROOT, folder))
 
-ADMIN_URL = os.getenv("DATABASE_URL", "postgresql://mfg:mfg_local_pw@localhost:5433/mfg")
+import env_file  # noqa: E402
+
 TEST_DB_NAME = "mfg_test"
 
 
 def database_url_for_tests():
     """Same server as ADMIN_URL, but the separate database mfg_test."""
-    return ADMIN_URL.rsplit("/", 1)[0] + "/" + TEST_DB_NAME
+    return env_file.database_url().rsplit("/", 1)[0] + "/" + TEST_DB_NAME
 
 
 @pytest.fixture(scope="session")
 def database_url():
     """Create a fresh test database so the tests never touch your real data."""
     try:
-        admin = psycopg.connect(ADMIN_URL, autocommit=True)
-    except psycopg.OperationalError:
+        admin = psycopg.connect(env_file.database_url(), autocommit=True)
+    except (psycopg.OperationalError, RuntimeError):
         pytest.skip("no database available (start it with: docker compose up -d timescaledb)")
 
     admin.execute(f"DROP DATABASE IF EXISTS {TEST_DB_NAME} WITH (FORCE)")
