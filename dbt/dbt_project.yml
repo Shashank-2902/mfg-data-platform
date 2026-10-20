@@ -1,0 +1,19 @@
+name: mfg
+version: "1.0.0"
+config-version: 2
+profile: mfg
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+vars:
+  # Assumption: one failure stops the machine for this many minutes.
+  # The dataset has no real downtime, so this number is ours.
+  minutes_per_failure: 30
+
+models:
+  mfg:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,0 +1,132 @@
+# Start everything:        docker compose up -d --build
+# Replay data:             docker compose run --rm replayer --rows 2000 --rate 50
+# Build the dbt models:    docker compose run --rm dbt build
+# See the README for the full walkthrough.
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ingest:
+    build: ./ingest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      MQTT_HOST: mosquitto
+    depends_on:
+      mosquitto:
+        condition: service_started
+      timescaledb:
+        condition: service_healthy
+
+  replayer:
+    build: ./replayer
+    profiles: ["tools"]
+    environment:
+      MQTT_HOST: mosquitto
+    volumes:
+      - ./data:/data:ro
+    depends_on:
+      - mosquitto
+
+  monitor:
+    build: ./monitor
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/incident
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  dbt:
+    build: ./dbt
+    profiles: ["tools"]
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./dbt:/dbt
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/mfg.json
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # n8n only sends the alerts. All the checking happens in the monitor service.
+  n8n:
+    image: n8nio/n8n:1.70.3
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n/workflows:/workflows:ro
+      - ./n8n/credentials.json:/credentials.json:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        n8n import:credentials --input=/credentials.json &&
+        n8n import:workflow --separate --input=/workflows &&
+        n8n update:workflow --all --active=true &&
+        n8n start
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
+  # Demo only: prints Telegram messages to the console so you can try the flow without a bot.
+  fake-telegram:
+    image: python:3.11-slim
+    profiles: ["demo"]
+    command: ["python", "/fake_telegram.py"]
+    volumes:
+      - ./scripts/fake_telegram.py:/fake_telegram.py:ro
+
+volumes:
+  mosquitto-data:
+  db-data:
+  grafana-data:
+  n8n-data:

@@ -1,0 +1,161 @@
+{
+  "id": "mfgalertflow01",
+  "name": "mfg incident alert",
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    {
+      "id": "n1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "mfg-incident",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "incident",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "n2",
+      "name": "Open incident",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [240, 300],
+      "alwaysOutputData": true,
+      "credentials": { "postgres": { "id": "mfgpostgres01", "name": "mfg Postgres" } },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO incidents (machine_id, incident_type, severity, message, outbox_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (machine_id, incident_type) WHERE status = 'open' DO NOTHING RETURNING id::text AS id",
+        "options": {
+          "queryReplacement": "={{ [$json.body.machine_id, $json.body.incident_type, $json.body.severity, $json.body.message, $json.body.outbox_id] }}"
+        }
+      }
+    },
+    {
+      "id": "n3",
+      "name": "Is it a new incident?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "n4",
+      "name": "Switch on severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [720, 200],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Webhook').item.json.body.severity }}",
+                    "rightValue": "high",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "high"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "other" }
+      }
+    },
+    {
+      "id": "n5",
+      "name": "Telegram high",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [960, 120],
+      "credentials": { "telegramApi": { "id": "mfgtelegram01", "name": "mfg Telegram" } },
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=ALERT {{ $('Webhook').item.json.body.machine_id }}: {{ $('Webhook').item.json.body.message }}",
+        "additionalFields": { "appendAttribution": false }
+      }
+    },
+    {
+      "id": "n6",
+      "name": "Telegram other",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [960, 300],
+      "credentials": { "telegramApi": { "id": "mfgtelegram01", "name": "mfg Telegram" } },
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=Warning {{ $('Webhook').item.json.body.machine_id }}: {{ $('Webhook').item.json.body.message }}",
+        "additionalFields": { "appendAttribution": false }
+      }
+    },
+    {
+      "id": "n7",
+      "name": "Mark outbox delivered",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1200, 300],
+      "credentials": { "postgres": { "id": "mfgpostgres01", "name": "mfg Postgres" } },
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE outbox SET delivered_at = now() WHERE id = $1 RETURNING id::text AS id",
+        "options": {
+          "queryReplacement": "={{ $('Webhook').item.json.body.outbox_id }}"
+        }
+      }
+    },
+    {
+      "id": "n8",
+      "name": "Answer the monitor",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ delivered: true }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Open incident", "type": "main", "index": 0 }]] },
+    "Open incident": { "main": [[{ "node": "Is it a new incident?", "type": "main", "index": 0 }]] },
+    "Is it a new incident?": {
+      "main": [
+        [{ "node": "Switch on severity", "type": "main", "index": 0 }],
+        [{ "node": "Mark outbox delivered", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch on severity": {
+      "main": [
+        [{ "node": "Telegram high", "type": "main", "index": 0 }],
+        [{ "node": "Telegram other", "type": "main", "index": 0 }]
+      ]
+    },
+    "Telegram high": { "main": [[{ "node": "Mark outbox delivered", "type": "main", "index": 0 }]] },
+    "Telegram other": { "main": [[{ "node": "Mark outbox delivered", "type": "main", "index": 0 }]] },
+    "Mark outbox delivered": { "main": [[{ "node": "Answer the monitor", "type": "main", "index": 0 }]] }
+  }
+}

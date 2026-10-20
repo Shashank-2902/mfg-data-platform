@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: mart_downtime_per_machine
+    description: Failures and estimated downtime per machine.
+    columns:
+      - name: machine_id
+        data_tests:
+          - unique
+          - not_null
+      - name: failures
+        data_tests:
+          - not_null
+
+  - name: mart_failure_rate_by_type
+    description: Failure counts and rates per failure type.
+    columns:
+      - name: failure_type
+        data_tests:
+          - unique
+          - not_null
+
+  - name: mart_oee_style_kpi
+    description: Availability, performance and an OEE-style number per machine (no quality part).
+    columns:
+      - name: machine_id
+        data_tests:
+          - unique
+          - not_null

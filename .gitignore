@@ -1,0 +1,10 @@
+.env
+n8n/credentials.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml

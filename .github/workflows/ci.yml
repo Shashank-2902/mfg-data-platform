@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: mfg
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: mfg
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U mfg -d mfg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://mfg:ci_password@localhost:5433/mfg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  dbt:
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: mfg
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: mfg
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U mfg -d mfg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://mfg:ci_password@localhost:5433/mfg
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5433"
+      POSTGRES_USER: mfg
+      POSTGRES_PASSWORD: ci_password
+      POSTGRES_DB: mfg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt dbt-postgres==1.11.0
+      - name: Create the tables and load sample data
+        run: |
+          psql "$DATABASE_URL" -f db/init.sql
+          python scripts/load_sample.py --rows 3000
+      - name: Build and test the dbt models
+        run: dbt build --project-dir dbt --profiles-dir dbt
+
+  compose-file:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: touch n8n/credentials.json
+      - run: docker compose --profile tools --profile demo config --quiet

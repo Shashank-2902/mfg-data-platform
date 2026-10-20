@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: stg_readings
+    description: Cleaned sensor readings, one row per machine and time.
+    columns:
+      - name: machine_id
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["M1", "M2", "M3", "M4", "M5"]
+      - name: event_time
+        data_tests:
+          - not_null
+      - name: product_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["L", "M", "H"]
+      - name: machine_failure
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false

@@ -1,0 +1,178 @@
+# mfg-data-platform
+
+A small manufacturing data platform that runs on one laptop with Docker. Machine
+readings are sent over MQTT, stored in a time-series database, turned into KPIs
+with dbt, shown in Grafana, and watched by a monitor that sends alerts through n8n
+and Telegram when a sensor breaks.
+
+**Data note: public data, synthetic timing.** The readings come from the public
+UCI AI4I 2020 dataset. That dataset has no timestamps and no machine ids, so the
+replayer invents both: the rows are shared between five machines and each row is
+10 seconds after the previous one. This project is a rebuild of a pattern on public
+data. It is not a production system and makes no claim about a real plant.
+
+## How it works
+
+```mermaid
+flowchart LR
+    CSV[AI4I 2020 csv] --> R[replayer]
+    R -->|MQTT| B[Mosquitto broker]
+    B --> I[ingest]
+    I --> T[(Postgres + TimescaleDB<br/>raw_readings)]
+    T --> D[dbt<br/>staging and marts]
+    D --> G[Grafana dashboard]
+    T --> M[monitor]
+    M -->|outbox, retries| N[n8n]
+    N --> TG[Telegram]
+    N --> T
+```
+
+| Part | What it does |
+| --- | --- |
+| `replayer/` | Reads the CSV and publishes one reading at a time at a fixed rate. Can inject faults. |
+| `ingest/` | Subscribes to MQTT, checks the shape of each message and stores it. Repeated readings are stored once. |
+| `monitor/` | Looks for silent machines, stuck values and out-of-range values. Writes alerts to an outbox table and delivers them to n8n, retrying if n8n is down. |
+| `dbt/` | Cleans the raw data and builds three KPI tables, with tests. |
+| `n8n/workflows/` | The alert flow, exported as JSON without secrets. n8n only delivers; all decisions are made in tested Python or dbt. |
+| `grafana/` | Data source and dashboard, provisioned from files. |
+| `benchmark/` | Measures detection delay and compares the monitor with a simple baseline. |
+| `docs/learn/` | Plain-language notes for each week: concepts, code walkthrough, interview questions, glossary. |
+
+## Run it
+
+You need Docker Desktop, Python 3.11 and Git.
+
+```bash
+# 1. Settings. Edit the passwords in .env.
+cp .env.example .env
+
+# 2. Credentials for n8n, built from .env.
+python scripts/make_n8n_credentials.py
+
+# 3. Start the stack. The demo profile adds a fake Telegram that prints messages.
+docker compose --profile demo up -d --build
+
+# 4. Send data: 2000 readings at 50 per second.
+docker compose run --rm replayer --rows 2000 --rate 50
+
+# 5. Build the KPI tables and run the dbt tests.
+docker compose run --rm dbt build
+```
+
+Open Grafana at http://localhost:3000 (user `admin`, password from `.env`). The
+dashboard "Manufacturing data platform" is the home page. n8n is at
+http://localhost:5678.
+
+Use `python scripts/load_sample.py --rows 10000` to fill the database straight
+from the CSV without waiting for MQTT.
+
+### Break a sensor and watch the alert
+
+```bash
+# Machine M3 goes silent after 500 rows. Other options: sensor_stuck, out_of_range
+docker compose run --rm replayer --fault silence --fault-start-row 500 --rate 10
+```
+
+The monitor notices, writes the alert to the outbox, n8n logs the incident and
+sends the message. With the demo profile you can read it with
+`docker compose logs fake-telegram`. Incidents show in the dashboard and in the
+`incidents` table.
+
+### Use a real Telegram bot
+
+1. Create a bot with @BotFather and copy the token.
+2. Send your bot a message, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your chat id.
+3. Put `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` and set `TELEGRAM_BASE_URL=https://api.telegram.org`.
+4. Run `python scripts/make_n8n_credentials.py` again and recreate n8n with
+   `docker compose up -d --force-recreate n8n`. n8n updates its saved credentials
+   when it starts. Do not start the `demo` profile.
+
+### Tests
+
+```bash
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt     # on Linux/macOS: .venv/bin/pip
+docker compose up -d timescaledb
+.venv/Scripts/python -m pytest
+```
+
+The tests create their own database called `mfg_test`, so your data is never touched.
+GitHub Actions runs the same tests, the dbt build and a check of the compose file on every push.
+
+## Results
+
+All numbers below are measured, not estimated.
+
+### Does the monitor beat a simple baseline?
+
+The baseline is the obvious first idea: alert only when a machine stops sending data.
+Run with `python benchmark/detection_delay.py` (simulated time, no Docker). The fault
+starts 30 seconds into a 200 second replay at 10 messages per second.
+
+| Fault | Monitor: detection delay | Baseline (silence only): detection delay | False alarms (monitor / baseline) |
+| --- | --- | --- | --- |
+| silence | 60.0 s | 60.0 s | 0 / 0 |
+| sensor_stuck | 5.0 s | not detected | 0 / 0 |
+| out_of_range | 5.0 s | not detected | 0 / 0 |
+| none (clean run) | - | - | 0 / 0 |
+
+The baseline cannot see a frozen or broken sensor that keeps sending data. The
+monitor finds a broken value at its next check (every 5 seconds) and a frozen
+sensor once ten identical readings have arrived. Silence needs the full 60 second
+limit, so both methods are equally fast there. In the simulation, checks happen at
+fixed 5 second steps; on the real stack they start at a random moment, so the real
+delays differ by a few seconds.
+
+### On the real stack
+
+Run with `python benchmark/live_fault_test.py`. Each run replays 1000 readings
+through MQTT, Postgres, the monitor and n8n. The delay is measured from the row
+where the fault starts to the moment the incident is written by n8n.
+
+| Fault | Detection delay | False alarms | Rows lost |
+| --- | --- | --- | --- |
+| none (clean run) | - | 0 | 0 |
+| silence (M3 stops sending) | 63.8 s | 0 | 0 |
+| sensor_stuck (M2 torque frozen) | 10.9 s | 0 | 0 |
+| out_of_range (M4 air temperature 0 K) | 1.8 s | 0 | 0 |
+
+Rows lost is the number of readings that should have reached the database minus
+the number that did. It is 0 in every run.
+
+### Data quality finding
+
+dbt reports 27 rows in the public dataset where the failure flag and the failure
+modes disagree (9 rows with a failure but no mode, 18 with a mode but no failure).
+The data is kept as it is and the test only warns.
+
+## Design choices
+
+- **Idempotent ingestion.** The key is machine and event time, and inserts skip
+  repeats, so a message delivered twice or a replayed file does not create duplicates.
+- **Outbox pattern.** Alerts are written to a table first and delivered afterwards.
+  If n8n is down, ingestion is not affected and alerts are retried with backoff.
+  There is a test for this rule.
+- **n8n at the edge.** Checks, dedupe keys and retries live in tested code. n8n
+  receives an alert, logs it, sends the message and marks it delivered.
+- **Ingest checks shape, the monitor judges values.** A reading of 0 Kelvin is
+  stored, so the evidence of a broken sensor stays in the database.
+
+## Limits
+
+- OEE needs planned time, ideal speed and good-part counts, which this dataset does
+  not have. The KPI is called "OEE-style" and covers availability and performance only.
+- Downtime is an estimate: each failure counts as 30 minutes (`minutes_per_failure`
+  in `dbt/dbt_project.yml`).
+- The local broker allows anonymous connections. Do not expose it to the internet.
+- The monitor checks readings received in the last hour. A machine that stays silent
+  for longer than that drops out of the check and its incident is closed.
+- The alert channel was tested with a local fake of the Telegram API. A real bot
+  needs your own token, as described above.
+
+## Data source and licence
+
+Dataset: S. Matzka, "AI4I 2020 Predictive Maintenance Dataset", UCI Machine Learning
+Repository, 2020, https://doi.org/10.24432/C5HS5C. Licensed CC BY 4.0. The CSV is
+included in `data/` under that licence.
+
+Code: MIT, see `LICENSE`.

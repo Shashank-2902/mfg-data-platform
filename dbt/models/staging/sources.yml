@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: public
+    tables:
+      - name: raw_readings
+        description: One row per sensor reading, written by the ingest service.

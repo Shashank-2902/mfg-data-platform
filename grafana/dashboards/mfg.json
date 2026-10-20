@@ -1,0 +1,179 @@
+{
+  "uid": "mfg-overview",
+  "title": "Manufacturing data platform",
+  "tags": ["mfg"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Readings stored",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) AS readings FROM public.raw_readings"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Failure rate (% of readings)",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT failures_per_1000 / 10 AS failure_rate FROM analytics.mart_failure_rate_by_type WHERE failure_type = 'Any failure'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Open incidents",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) AS open_incidents FROM public.incidents WHERE status = 'open'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Rejected messages",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT count(*) AS rejected FROM public.rejected_readings"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Failures per 1000 readings, by type",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": { "values": true, "calcs": [], "fields": "/^failures_per_1000$/" }
+      },
+      "fieldConfig": { "defaults": { "min": 0, "decimals": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT failure_type, failures_per_1000 FROM analytics.mart_failure_rate_by_type ORDER BY failures_per_1000 DESC"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "OEE-style KPI per machine (availability x performance, no quality)",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": { "values": true, "calcs": [], "fields": "/^oee_style_percent$/" }
+      },
+      "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT machine_id, oee_style_percent FROM analytics.mart_oee_style_kpi ORDER BY machine_id"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Downtime per machine (estimated)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT machine_id, readings, failures, downtime_minutes, failure_percent FROM analytics.mart_downtime_per_machine ORDER BY machine_id"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Readings received per minute (live ingestion)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 7 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT date_trunc('minute', received_at) AS time, machine_id AS metric, count(*) AS readings FROM public.raw_readings WHERE $__timeFilter(received_at) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Latest incidents",
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 7 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT opened_at, machine_id, incident_type, severity, status, message FROM public.incidents ORDER BY opened_at DESC LIMIT 20"
+        }
+      ]
+    }
+  ]
+}
