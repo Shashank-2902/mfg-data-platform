@@ -90,6 +90,21 @@ sends the message. With the demo profile you can read it with
    `docker compose up -d --force-recreate n8n`. n8n updates its saved credentials
    when it starts. Do not start the `demo` profile.
 
+### Running it more than once
+
+- Ingestion skips readings it has already stored, and an open incident blocks a new
+  alert for the same machine and type. To start clean, empty the tables:
+
+  ```bash
+  docker compose exec timescaledb psql -U mfg -d mfg -c "TRUNCATE raw_readings, rejected_readings, incidents, outbox RESTART IDENTITY;"
+  ```
+
+- After changing `.env`, run `python scripts/make_n8n_credentials.py` and then
+  `docker compose up -d --force-recreate n8n`. n8n reads its credentials only when it
+  starts.
+- Without `--rows` the replayer never stops. Always give `--rows`.
+- After a replay ends, every machine raises a silence alert after about 60 seconds.
+
 ### Tests
 
 ```bash
@@ -165,6 +180,18 @@ The data is kept as it is and the test only warns. A fresh `dbt build` on the fu
   If n8n is down, ingestion is not affected and alerts are retried with backoff.
   There is a test for this rule. That test calls the handler in the same process;
   the live run on the real stack shows the same with separate containers.
+- **What "delivered" means.** The monitor posts the alert to the n8n webhook and counts it
+  as delivered only when n8n answers with a success status and the outbox row has
+  `delivered_at` set. In the workflow, the node "Mark outbox delivered" sets that column. It
+  runs after the Telegram node when the incident is new, and directly after the
+  incident check when an open incident for the same machine and type already exists (then
+  no message is sent). The Telegram nodes have no error handling of their own. If the
+  Telegram call fails inside n8n, the incident row has already been written and the
+  workflow stops before the answer node, so the monitor should see an error and retry
+  with backoff. The retry then finds the open incident and marks the row delivered
+  without sending a message. So a message lost in
+  the Telegram step is not sent again. This is read from the code and the workflow
+  JSON. I did not test a failing Telegram call.
 - **n8n at the edge.** Checks, dedupe keys and retries live in tested code. n8n
   receives an alert, logs it, sends the message and marks it delivered.
 - **Ingest checks shape, the monitor judges values.** A reading of 0 Kelvin is
@@ -188,8 +215,12 @@ The data is kept as it is and the test only warns. A fresh `dbt build` on the fu
   only during the run.
 - The silence check knows a machine only after it has sent at least one reading. A
   machine that never sent anything is not reported.
-- The alert channel was tested with a local fake of the Telegram API. A real bot
-  needs your own token, as described above.
+- The alert channel was tested once by hand with a real Telegram bot on 22 Oct 2026:
+  the out-of-range alert and the silence alerts arrived. The automated tests and the
+  benchmark use the fake Telegram server, and the real Telegram call is not part of CI.
+- In that real test the underscores of the sensor name were lost in the Telegram text
+  (`air_temp_k` showed as `airtempk`). The message is sent with Markdown formatting,
+  which treats underscores as markup. It is not fixed yet.
 
 ## Data source and licence
 
