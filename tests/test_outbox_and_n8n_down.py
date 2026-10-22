@@ -191,3 +191,35 @@ def test_the_silence_incident_resolves_when_new_data_arrives(conn):
     runner.run_once(conn, send_to(DEAD_URL))
     assert count(conn, "incidents", "status = 'resolved'") == 1
     assert count(conn, "incidents", "status = 'open'") == 0
+
+
+def start_n8n_that_answers(status):
+    """A webhook that always answers with the given status and changes nothing."""
+
+    class Answer(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/webhook/incident"
+
+
+def test_an_error_answer_from_n8n_keeps_the_row_undelivered_and_it_is_retried(conn):
+    """n8n answers 500 when its Telegram call fails: the monitor must keep the row and try again."""
+    outbox.add_if_new(conn, ALERT)
+    server, url = start_n8n_that_answers(500)
+    try:
+        assert outbox.deliver_pending(conn, send_to(url)) == 0
+        assert count(conn, "outbox", "attempts = 1 AND delivered_at IS NULL") == 1
+
+        make_due(conn)
+        assert outbox.deliver_pending(conn, send_to(url)) == 0
+        assert count(conn, "outbox", "attempts = 2 AND delivered_at IS NULL") == 1
+    finally:
+        server.shutdown()

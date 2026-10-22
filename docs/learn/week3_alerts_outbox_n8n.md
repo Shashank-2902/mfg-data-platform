@@ -34,8 +34,9 @@ The fix is **dedupe**: one alert per problem. The key is "machine + type". Here:
   in the outbox or open as an incident
 - the database enforces it too: a unique index allows only one **open** incident
   per machine and type
-- n8n uses `ON CONFLICT DO NOTHING` on that index and sends no message when the
-  incident was already open
+- n8n's first step writes the incident only if this outbox row has none yet, and it
+  uses `ON CONFLICT DO NOTHING` on that index. A real duplicate (another outbox row for
+  a machine and type that already has an open incident) gets no message
 - when the problem disappears, the monitor closes the incident, so a new
   occurrence later creates a fresh alert
 
@@ -55,12 +56,22 @@ The **outbox pattern** solves this in two steps:
 Retries use **exponential backoff**: wait 10 s, then 20 s, 40 s and so on, but
 never more than 5 minutes. This avoids hammering a system that is trying to recover.
 
-Because a retry can arrive after a successful delivery whose answer was lost, the
-receiver must be safe to call twice. That is why dedupe matters here as well.
+**At least once delivery.** The monitor cannot know whether n8n did its work when an
+answer is lost, so it tries again. That means a message can arrive twice, but it
+cannot be lost. In this project the row counts as delivered only after Telegram
+answered with success. If Telegram accepts the message and the next step ("Mark outbox
+delivered") fails, the retry sends the same message a second time. The receiver must
+therefore be safe to call twice: the incident is written once, the message can repeat.
 
 **Failure rule of this project:** if n8n is down, ingestion carries on and alerts
 wait in the outbox. There is a test for exactly this
 (`test_ingestion_keeps_working_while_n8n_is_down`).
+
+**Second failure rule:** if the Telegram call fails inside n8n, n8n answers the monitor
+with an error (HTTP 500), the row stays undelivered and the monitor retries. The retry
+sends the message again and does not create a second incident. This was checked against
+the fake Telegram server with `FAKE_TELEGRAM_FAIL_FIRST=1`: request 1 got HTTP 500, the
+retry sent the text once with HTTP 200 and `delivered_at` was set only after that.
 
 ### Why n8n only sits at the edge
 
@@ -73,7 +84,9 @@ So the rule is:
 - **All decisions are in tested Python (monitor) or dbt.** What counts as a
   problem, how to dedupe, how to retry.
 - **n8n only does delivery.** Receive the alert, log the incident, send the
-  Telegram message, mark the outbox row as delivered.
+  Telegram message, mark the outbox row as delivered. One small rule lives in the
+  workflow: whether to send (new incident or retry) or skip (real duplicate). It is a
+  single SQL query, and `tests/test_n8n_workflow.py` runs that query on a test database.
 
 If n8n were replaced tomorrow by an email script, the monitor would not change.
 
@@ -99,18 +112,30 @@ If n8n were replaced tomorrow by an email script, the monitor would not change.
 **`n8n/workflows/alert_flow.json`** (exported, no secrets)
 
 1. Webhook receives the alert.
-2. Postgres inserts the incident. If an open incident exists, it inserts nothing.
-3. An IF node asks: was a new incident created?
-4. If yes, a Switch node picks the message by severity and Telegram sends it.
-5. Postgres marks the outbox row as delivered (also when it was a duplicate).
+2. "Open incident" runs one Postgres query. It inserts the incident, unless this outbox
+   row already has one, and returns a `send` flag. `send` is true when the incident was
+   just created, or when this row already has an incident but is still undelivered
+   (a retry after a failed Telegram call). It is false for a real duplicate or for a row
+   that is already delivered.
+3. An IF node ("Send the message?") checks the `send` flag.
+4. If true, a Switch node picks the message by severity and Telegram sends it. The text is
+   one expression and goes out with `parse_mode` HTML, so sensor names like `air_temp_k`
+   keep their underscores. The characters `&`, `<` and `>` are escaped.
+5. Only after Telegram succeeded, Postgres marks the outbox row as delivered. For a real
+   duplicate (the false branch) the row is marked delivered without a message.
 6. The flow answers the monitor with 200.
 
-If any step fails, the answer is an error, the monitor sees it and retries later.
+If any step fails, for example the Telegram call, the run stops before step 6. In this
+response mode n8n answers the webhook with HTTP 500 (read from the n8n 1.70.3 source), the
+monitor sees the error and retries with backoff. The Telegram nodes have no error handling
+on purpose: a failure must stop the flow.
 
 **Credentials** are not in the JSON. `scripts/make_n8n_credentials.py` builds them
 from your `.env` file, and n8n imports them at startup.
 
-**`scripts/fake_telegram.py`** lets you try the whole flow without a Telegram bot.
+**`scripts/fake_telegram.py`** lets you try the whole flow without a Telegram bot. It prints
+one line per request. With `FAKE_TELEGRAM_FAIL_FIRST=N` the first N requests answer HTTP
+500, so you can test the failure case.
 
 **`benchmark/`** measures the result: detection delay per fault, false alarms and
 lost rows, compared with a baseline that only checks for silence. The live test runs
@@ -132,21 +157,27 @@ laptop slept) is thrown away and repeated.
    step that retries on failure. The write is fast and local, so you do not lose
    the message when the target is down.
 
-4. **What happens if n8n is down?**
+4. **What happens if n8n is down, or if Telegram fails inside n8n?**
    Ingestion is not affected. The monitor writes alerts to the outbox, delivery
    fails, the attempt counter goes up and the retry is scheduled with backoff.
-   When n8n returns, the waiting alerts are delivered.
+   When n8n returns, the waiting alerts are delivered. If only the Telegram call fails,
+   n8n answers with HTTP 500, the row stays undelivered and the retry sends the message
+   again without a second incident.
 
 5. **Why exponential backoff?**
    It gives a struggling system time to recover and avoids a flood of retries.
 
-6. **How do you handle a retry after a delivery that actually worked?**
-   The receiver must be safe to call twice. The incident insert ignores a repeat
-   and the outbox row is simply marked delivered again.
+6. **What delivery guarantee do you give, and what does "delivered" mean?**
+   At least once. A row is delivered only after Telegram answered with success and the
+   outbox row was marked. If Telegram accepts the message and the marking step fails, the
+   retry sends it twice. The incident is still written once, because the first query
+   writes an incident only if this outbox row has none.
 
 7. **Why keep the logic out of n8n?**
    Code can be unit tested, reviewed and versioned. Visual flows are hard to test.
-   n8n stays a thin delivery layer that is easy to replace.
+   n8n stays a thin delivery layer that is easy to replace. The one rule that does live in the
+   workflow (send or skip) is a single SQL query that I test on a database, and the
+   workflow file itself is checked by tests that read the JSON.
 
 8. **How do you detect a stuck sensor?**
    The same value many times in a row. Real signals vary slightly, so ten

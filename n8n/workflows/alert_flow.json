@@ -24,11 +24,10 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [240, 300],
-      "alwaysOutputData": true,
       "credentials": { "postgres": { "id": "mfgpostgres01", "name": "mfg Postgres" } },
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO incidents (machine_id, incident_type, severity, message, outbox_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (machine_id, incident_type) WHERE status = 'open' DO NOTHING RETURNING id::text AS id",
+        "query": "WITH new_incident AS (INSERT INTO incidents (machine_id, incident_type, severity, message, outbox_id) SELECT $1::text, $2::text, $3::text, $4::text, $5::bigint WHERE NOT EXISTS (SELECT 1 FROM incidents WHERE outbox_id = $5::bigint) ON CONFLICT (machine_id, incident_type) WHERE status = 'open' DO NOTHING RETURNING id) SELECT (EXISTS (SELECT 1 FROM new_incident) OR EXISTS (SELECT 1 FROM incidents i JOIN outbox o ON o.id = i.outbox_id WHERE i.outbox_id = $5::bigint AND o.delivered_at IS NULL)) AS send",
         "options": {
           "queryReplacement": "={{ [$json.body.machine_id, $json.body.incident_type, $json.body.severity, $json.body.message, $json.body.outbox_id] }}"
         }
@@ -36,7 +35,7 @@
     },
     {
       "id": "n3",
-      "name": "Is it a new incident?",
+      "name": "Send the message?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [480, 300],
@@ -46,9 +45,9 @@
           "conditions": [
             {
               "id": "c1",
-              "leftValue": "={{ $json.id }}",
+              "leftValue": "={{ $json.send }}",
               "rightValue": "",
-              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
             }
           ],
           "combinator": "and"
@@ -94,8 +93,8 @@
       "credentials": { "telegramApi": { "id": "mfgtelegram01", "name": "mfg Telegram" } },
       "parameters": {
         "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "text": "=ALERT {{ $('Webhook').item.json.body.machine_id }}: {{ $('Webhook').item.json.body.message }}",
-        "additionalFields": { "appendAttribution": false }
+        "text": "={{ 'ALERT ' + String($('Webhook').item.json.body.machine_id).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ': ' + String($('Webhook').item.json.body.message).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
       }
     },
     {
@@ -107,8 +106,8 @@
       "credentials": { "telegramApi": { "id": "mfgtelegram01", "name": "mfg Telegram" } },
       "parameters": {
         "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-        "text": "=Warning {{ $('Webhook').item.json.body.machine_id }}: {{ $('Webhook').item.json.body.message }}",
-        "additionalFields": { "appendAttribution": false }
+        "text": "={{ 'Warning ' + String($('Webhook').item.json.body.machine_id).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + ': ' + String($('Webhook').item.json.body.message).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }}",
+        "additionalFields": { "appendAttribution": false, "parse_mode": "HTML" }
       }
     },
     {
@@ -141,8 +140,8 @@
   ],
   "connections": {
     "Webhook": { "main": [[{ "node": "Open incident", "type": "main", "index": 0 }]] },
-    "Open incident": { "main": [[{ "node": "Is it a new incident?", "type": "main", "index": 0 }]] },
-    "Is it a new incident?": {
+    "Open incident": { "main": [[{ "node": "Send the message?", "type": "main", "index": 0 }]] },
+    "Send the message?": {
       "main": [
         [{ "node": "Switch on severity", "type": "main", "index": 0 }],
         [{ "node": "Mark outbox delivered", "type": "main", "index": 0 }]

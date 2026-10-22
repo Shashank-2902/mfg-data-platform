@@ -122,6 +122,9 @@ services:
     image: python:3.11-slim
     profiles: ["demo"]
     command: ["python", "/fake_telegram.py"]
+    environment:
+      # Set to 1 to make the first request fail with HTTP 500, to test the retry.
+      FAKE_TELEGRAM_FAIL_FIRST: ${FAKE_TELEGRAM_FAIL_FIRST:-0}
     volumes:
       - ./scripts/fake_telegram.py:/fake_telegram.py:ro
 

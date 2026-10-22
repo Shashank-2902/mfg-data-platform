@@ -105,6 +105,61 @@ sends the message. With the demo profile you can read it with
 - Without `--rows` the replayer never stops. Always give `--rows`.
 - After a replay ends, every machine raises a silence alert after about 60 seconds.
 
+### Testing the failure case
+
+This checks that a failed Telegram call is retried and the message is sent once. It uses
+the fake Telegram server of the demo profile, so no message reaches a real bot. These steps
+were run on 22 Oct 2026 against the fake server.
+
+1. In `.env`, point Telegram at the fake server and keep the real URL as a comment:
+
+   ```
+   # TELEGRAM_BASE_URL=https://api.telegram.org
+   TELEGRAM_BASE_URL=http://fake-telegram:8081
+   ```
+
+2. Rebuild the n8n credentials and recreate n8n, because it reads them at start:
+
+   ```powershell
+   python scripts/make_n8n_credentials.py
+   docker compose --profile demo up -d
+   docker compose --profile demo up -d --force-recreate n8n
+   ```
+
+3. Make the first Telegram request fail, then empty the tables and replay a fault:
+
+   ```powershell
+   $env:FAKE_TELEGRAM_FAIL_FIRST = "1"
+   docker compose --profile demo up -d --force-recreate fake-telegram
+   docker compose exec timescaledb psql -U mfg -d mfg -c "TRUNCATE raw_readings, rejected_readings, incidents, outbox RESTART IDENTITY;"
+   docker compose run --rm replayer --rows 300 --rate 50 --fault out_of_range --fault-start-row 100
+   ```
+
+4. Look at the results:
+
+   ```powershell
+   docker compose logs fake-telegram
+   docker compose exec timescaledb psql -U mfg -d mfg -c "select id, machine_id, incident_type, attempts, delivered_at from outbox order by id"
+   docker compose exec timescaledb psql -U mfg -d mfg -c "select id, machine_id, incident_type, status, outbox_id from incidents order by id"
+   ```
+
+   What was measured: request 1 got HTTP 500, the retry sent the same text once with
+   HTTP 200, `delivered_at` was set only after that, and there was exactly one incident.
+   The text kept `air_temp_k` with its underscores (`parse_mode=HTML`).
+
+5. Run it again with `$env:FAKE_TELEGRAM_FAIL_FIRST = "0"` after recreating the fake
+   server and emptying the tables. One alert was sent once. A second outbox row for the
+   same machine and type, inserted by hand while the incident was open, was marked
+   delivered without a new message and without a second incident.
+
+6. To go back to the real bot, swap the two `TELEGRAM_BASE_URL` lines in `.env`, run
+   `python scripts/make_n8n_credentials.py` and `docker compose up -d --force-recreate n8n`,
+   and remove the variable with `Remove-Item Env:FAKE_TELEGRAM_FAIL_FIRST`.
+
+Before the retry change, the real bot was checked by hand once. After the retry change, the
+real bot was checked by hand on 22 Oct 2026: the out-of-range alert arrived with the sensor
+name and its underscores intact.
+
 ### Tests
 
 ```bash
@@ -180,18 +235,15 @@ The data is kept as it is and the test only warns. A fresh `dbt build` on the fu
   If n8n is down, ingestion is not affected and alerts are retried with backoff.
   There is a test for this rule. That test calls the handler in the same process;
   the live run on the real stack shows the same with separate containers.
-- **What "delivered" means.** The monitor posts the alert to the n8n webhook and counts it
+- **What "delivered" means.** The monitor posts the alert to the n8n webhook. A row counts
   as delivered only when n8n answers with a success status and the outbox row has
-  `delivered_at` set. In the workflow, the node "Mark outbox delivered" sets that column. It
-  runs after the Telegram node when the incident is new, and directly after the
-  incident check when an open incident for the same machine and type already exists (then
-  no message is sent). The Telegram nodes have no error handling of their own. If the
-  Telegram call fails inside n8n, the incident row has already been written and the
-  workflow stops before the answer node, so the monitor should see an error and retry
-  with backoff. The retry then finds the open incident and marks the row delivered
-  without sending a message. So a message lost in
-  the Telegram step is not sent again. This is read from the code and the workflow
-  JSON. I did not test a failing Telegram call.
+  `delivered_at` set. The workflow sets that column in the last step, after Telegram
+  answered with success. If the Telegram call fails, n8n answers the monitor with an
+  error and the row stays undelivered. The monitor retries with backoff, and the retry
+  sends the message again without creating a second incident. A real duplicate (another
+  outbox row for a machine and type that already has an open incident) is marked delivered
+  without a message. Delivery is at least once: if Telegram accepts the message and the later
+  "Mark outbox delivered" step fails, the retry can send the same message twice.
 - **n8n at the edge.** Checks, dedupe keys and retries live in tested code. n8n
   receives an alert, logs it, sends the message and marks it delivered.
 - **Ingest checks shape, the monitor judges values.** A reading of 0 Kelvin is
@@ -215,12 +267,10 @@ The data is kept as it is and the test only warns. A fresh `dbt build` on the fu
   only during the run.
 - The silence check knows a machine only after it has sent at least one reading. A
   machine that never sent anything is not reported.
-- The alert channel was tested once by hand with a real Telegram bot on 22 Oct 2026:
-  the out-of-range alert and the silence alerts arrived. The automated tests and the
-  benchmark use the fake Telegram server, and the real Telegram call is not part of CI.
-- In that real test the underscores of the sensor name were lost in the Telegram text
-  (`air_temp_k` showed as `airtempk`). The message is sent with Markdown formatting,
-  which treats underscores as markup. It is not fixed yet.
+- Before the retry change, the alert channel was tested once by hand with a real
+  Telegram bot on 22 Oct 2026: the out-of-range alert and the silence alerts arrived. The
+  automated tests, the benchmark and the failure test below use the fake Telegram server,
+  and the real Telegram call is not part of CI.
 
 ## Data source and licence
 
