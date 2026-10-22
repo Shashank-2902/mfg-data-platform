@@ -21,14 +21,17 @@ def check_silence(last_seen, now, limit_seconds=rules.SILENCE_SECONDS):
     return alerts
 
 
-def check_stuck(recent_rows, count=rules.STUCK_COUNT):
+def check_stuck(recent_rows, count=rules.STUCK_COUNT, sensors=rules.STUCK_SENSORS):
     """recent_rows maps machine_id to its latest rows, newest first."""
     alerts = []
     for machine_id, rows in recent_rows.items():
-        torque_values = [row["torque_nm"] for row in rows[:count]]
-        if len(torque_values) == count and len(set(torque_values)) == 1:
-            message = f"torque stuck at {torque_values[0]} for {count} readings"
-            alerts.append(make_alert(machine_id, "sensor_stuck", "medium", message))
+        problems = []
+        for sensor in sensors:
+            values = [row[sensor] for row in rows[:count]]
+            if len(values) == count and len(set(values)) == 1:
+                problems.append(f"{sensor} stuck at {values[0]} for {count} readings")
+        if problems:
+            alerts.append(make_alert(machine_id, "sensor_stuck", "medium", "; ".join(problems)))
     return alerts
 
 

@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
+import os
+
 import checks
+import data_reader
+import message_builder
+import rules
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -15,8 +20,17 @@ def normal_row(torque=40.0, air_temp=298.0):
     }
 
 
+def moving_row(i, **changes):
+    """A row whose torque, speed and process temperature all change with i."""
+    row = normal_row(torque=40.0 + i)
+    row["rotational_speed_rpm"] = 1500 + i
+    row["process_temp_k"] = 308.0 + i / 10
+    row.update(changes)
+    return row
+
+
 def varied_rows(count=10):
-    return [normal_row(torque=40.0 + i) for i in range(count)]
+    return [moving_row(i) for i in range(count)]
 
 
 def test_recent_data_is_not_silence():
@@ -63,3 +77,45 @@ def test_zero_kelvin_is_out_of_range():
 def test_a_clean_stream_gives_no_alerts():
     last_seen = {"M1": NOW}
     assert checks.find_alerts(last_seen, {"M1": varied_rows()}, NOW) == []
+
+
+def test_stuck_speed_is_found_and_named():
+    rows = [moving_row(i, rotational_speed_rpm=1500) for i in range(10)]
+    alerts = checks.check_stuck({"M1": rows}, count=10)
+    assert len(alerts) == 1
+    assert "rotational_speed_rpm stuck at 1500" in alerts[0]["message"]
+    assert "torque_nm" not in alerts[0]["message"]
+
+
+def test_stuck_process_temperature_is_found_and_named():
+    rows = [moving_row(i, process_temp_k=308.6) for i in range(10)]
+    alerts = checks.check_stuck({"M1": rows}, count=10)
+    assert "process_temp_k stuck at 308.6" in alerts[0]["message"]
+
+
+def test_two_stuck_sensors_give_one_alert_naming_both():
+    rows = [moving_row(i, torque_nm=41.0, rotational_speed_rpm=1500) for i in range(10)]
+    alerts = checks.check_stuck({"M1": rows}, count=10)
+    assert len(alerts) == 1
+    assert "torque_nm" in alerts[0]["message"] and "rotational_speed_rpm" in alerts[0]["message"]
+
+
+def test_air_temperature_is_not_checked_for_stuck():
+    rows = [moving_row(i, air_temp_k=298.0) for i in range(10)]
+    assert "air_temp_k" not in rules.STUCK_SENSORS
+    assert checks.check_stuck({"M1": rows}, count=10) == []
+
+
+def test_real_ai4i_rows_give_no_stuck_alarm():
+    """Slide a window of STUCK_COUNT readings over every machine of the real data."""
+    path = os.path.join(os.path.dirname(__file__), "..", "data", "ai4i2020.csv")
+    rows = data_reader.read_rows(path)
+    per_machine = {}
+    for index, row in enumerate(rows):
+        per_machine.setdefault(message_builder.machine_for(index), []).append(row)
+
+    for machine_id, machine_rows in per_machine.items():
+        for start in range(len(machine_rows) - rules.STUCK_COUNT + 1):
+            window = machine_rows[start:start + rules.STUCK_COUNT]
+            newest_first = list(reversed(window))
+            assert checks.check_stuck({machine_id: newest_first}) == [], (machine_id, start)

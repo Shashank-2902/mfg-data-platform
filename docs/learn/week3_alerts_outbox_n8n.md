@@ -6,9 +6,16 @@
 
 The monitor looks for three kinds of problems:
 
-- **Silence**: a machine sends nothing for more than 60 seconds.
-- **Stuck value**: the same torque value arrives 10 times in a row. Real
-  measurements wiggle a little, so a flat line usually means a frozen sensor.
+- **Silence**: a machine sends nothing for more than 60 seconds. The monitor
+  remembers the last reading of every machine over the whole history, not only the
+  last hour. So a machine that has been dead for two hours still has its silence
+  incident open, and the incident closes only when the machine sends data again.
+- **Stuck value**: the same value arrives 10 times in a row for torque, rotational
+  speed or process temperature. Real measurements wiggle a little, so a flat line
+  usually means a frozen sensor. Air temperature is not checked: in the AI4I data
+  it has only 93 distinct values and one machine repeats the same value 10 times in
+  a row, which would raise a false alarm. This was found by sliding a window over
+  the real rows before choosing the sensors.
 - **Out of range**: a value outside what is physically sensible, such as 0 Kelvin
   for air temperature.
 
@@ -74,12 +81,13 @@ If n8n were replaced tomorrow by an email script, the monitor would not change.
 
 **`monitor/`**
 
-- `rules.py`: the limits (60 s silence, 10 stuck readings, allowed ranges). They
-  can be changed with environment variables.
+- `rules.py`: the limits (60 s silence, 10 stuck readings, the list of sensors the
+  stuck check uses, allowed ranges). The numbers can be changed with environment variables.
 - `checks.py`: three small functions that take plain data and return a list of
   alerts. They do not touch the database or the clock, so they are easy to test.
-- `monitor_db.py`: reads the latest readings from Postgres and closes incidents
-  that have cleared.
+- `monitor_db.py`: reads the last reading time of every machine (whole history)
+  and the latest rows of the last hour from Postgres, and closes incidents that
+  have cleared. The hour only limits the stuck and range checks, not silence.
 - `outbox.py`: `add_if_new` queues an alert unless it is a duplicate;
   `deliver_pending` tries every due alert; `backoff_seconds` calculates the wait.
 - `n8n_client.py`: one function that posts to the webhook and raises an error on
@@ -105,7 +113,10 @@ from your `.env` file, and n8n imports them at startup.
 **`scripts/fake_telegram.py`** lets you try the whole flow without a Telegram bot.
 
 **`benchmark/`** measures the result: detection delay per fault, false alarms and
-lost rows, compared with a baseline that only checks for silence.
+lost rows, compared with a baseline that only checks for silence. The live test runs
+every fault and the clean run 5 times and saves each finished run, so it can be
+stopped and continued. A run that took far longer than the replay (for example the
+laptop slept) is thrown away and repeated.
 
 ## 3. Interview questions
 
@@ -139,7 +150,10 @@ lost rows, compared with a baseline that only checks for silence.
 
 8. **How do you detect a stuck sensor?**
    The same value many times in a row. Real signals vary slightly, so ten
-   identical torque readings point to a frozen sensor.
+   identical readings point to a frozen sensor. I check torque, rotational speed and
+   process temperature. I left out air temperature after sliding a window over the
+   real data: it has few distinct values and one machine repeats one value 10 times,
+   which would be a false alarm. The alert message names the sensor.
 
 9. **Why does the monitor read the database and not listen to MQTT?**
    The database is the single source of truth, and checks like "no data for 60
@@ -150,6 +164,17 @@ lost rows, compared with a baseline that only checks for silence.
     I compared it with a baseline that only alerts on silence. The baseline
     misses stuck and out-of-range sensors completely. The monitor finds them
     within one check interval. Both had zero false alarms on a clean run.
+
+11. **How did you measure the detection delay on the real stack, and why repeat it?**
+    Each fault and the clean run were replayed 5 times through the real containers,
+    measuring from the row where the fault starts to the incident written by n8n.
+    One run can be lucky, because the monitor checks every 5 seconds at a random
+    moment. Five runs give a mean and a minimum and maximum. They are still my own
+    simulated faults found by my own monitor, so they test the pipeline, not real plant data.
+
+12. **What happens to a silence incident when a machine is dead for hours?**
+    It stays open. The monitor keeps the last reading time of every machine over all
+    history, so the machine does not fall out of the check. It closes when new data arrives.
 
 ## 4. Glossary
 

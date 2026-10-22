@@ -16,6 +16,11 @@ RECENT_ROWS_SQL = """
 """
 
 
+# The last reading of every machine, over all history. A machine that has been
+# silent for hours must still be known, otherwise its silence incident would close.
+LAST_SEEN_SQL = "SELECT machine_id, max(received_at) FROM raw_readings GROUP BY machine_id"
+
+
 def connect(url):
     return psycopg.connect(url, autocommit=True)
 
@@ -23,15 +28,13 @@ def connect(url):
 def get_state(conn, rows_per_machine, lookback_minutes):
     """Return (now, last_seen, recent_rows) as read from the database."""
     now = conn.execute("SELECT now()").fetchone()[0]
-    result = conn.execute(RECENT_ROWS_SQL, (lookback_minutes, rows_per_machine)).fetchall()
+    last_seen = dict(conn.execute(LAST_SEEN_SQL).fetchall())
 
-    last_seen = {}
+    # Only recent rows are used for the stuck and range checks.
+    result = conn.execute(RECENT_ROWS_SQL, (lookback_minutes, rows_per_machine)).fetchall()
     recent_rows = {}
-    for machine_id, received_at, *values in result:
-        row = dict(zip(READ_COLUMNS, values))
-        recent_rows.setdefault(machine_id, []).append(row)
-        if machine_id not in last_seen or received_at > last_seen[machine_id]:
-            last_seen[machine_id] = received_at
+    for machine_id, _received_at, *values in result:
+        recent_rows.setdefault(machine_id, []).append(dict(zip(READ_COLUMNS, values)))
     return now, last_seen, recent_rows
 
 

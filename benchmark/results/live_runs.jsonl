@@ -1,0 +1,20 @@
+{"fault": "none", "rows_lost": 0, "run_seconds": 100.2759, "false_alarms": 0}
+{"fault": "none", "rows_lost": 0, "run_seconds": 100.514404, "false_alarms": 0}
+{"fault": "none", "rows_lost": 0, "run_seconds": 100.402039, "false_alarms": 0}
+{"fault": "none", "rows_lost": 0, "run_seconds": 100.450034, "false_alarms": 0}
+{"fault": "none", "rows_lost": 0, "run_seconds": 100.338159, "false_alarms": 0}
+{"fault": "silence", "rows_lost": 0, "run_seconds": 100.378408, "delay": 65.0, "false_alarms": 0}
+{"fault": "silence", "rows_lost": 0, "run_seconds": 100.509405, "delay": 67.0, "false_alarms": 0}
+{"fault": "silence", "rows_lost": 0, "run_seconds": 100.414482, "delay": 60.0, "false_alarms": 0}
+{"fault": "silence", "rows_lost": 0, "run_seconds": 100.457077, "delay": 64.5, "false_alarms": 0}
+{"fault": "silence", "rows_lost": 0, "run_seconds": 100.470166, "delay": 64.0, "false_alarms": 0}
+{"fault": "sensor_stuck", "rows_lost": 0, "run_seconds": 100.264514, "delay": 8.5, "false_alarms": 0}
+{"fault": "sensor_stuck", "rows_lost": 0, "run_seconds": 100.410401, "delay": 8.2, "false_alarms": 0}
+{"fault": "sensor_stuck", "rows_lost": 0, "run_seconds": 100.404075, "delay": 7.6, "false_alarms": 0}
+{"fault": "sensor_stuck", "rows_lost": 0, "run_seconds": 100.441481, "delay": 7.2, "false_alarms": 0}
+{"fault": "sensor_stuck", "rows_lost": 0, "run_seconds": 100.511432, "delay": 6.9, "false_alarms": 0}
+{"fault": "out_of_range", "rows_lost": 0, "run_seconds": 100.437814, "delay": 1.0, "false_alarms": 0}
+{"fault": "out_of_range", "rows_lost": 0, "run_seconds": 100.463041, "delay": 5.4, "false_alarms": 0}
+{"fault": "out_of_range", "rows_lost": 0, "run_seconds": 100.454807, "delay": 5.0, "false_alarms": 0}
+{"fault": "out_of_range", "rows_lost": 0, "run_seconds": 100.464925, "delay": 4.0, "false_alarms": 0}
+{"fault": "out_of_range", "rows_lost": 0, "run_seconds": 100.471208, "delay": 3.6, "false_alarms": 0}

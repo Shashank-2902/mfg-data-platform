@@ -109,6 +109,7 @@
       "id": 6,
       "type": "bargauge",
       "title": "OEE-style KPI per machine (availability x performance, no quality)",
+      "description": "The machine ids M1 to M5 are assigned by the replayer, so differences between machines are not real.",
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
       "options": {
@@ -131,6 +132,7 @@
       "id": 7,
       "type": "table",
       "title": "Downtime per machine (estimated)",
+      "description": "The machine ids M1 to M5 are assigned by the replayer, so differences between machines are not real.",
       "gridPos": { "x": 0, "y": 12, "w": 12, "h": 7 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "mfg-postgres" },
       "targets": [

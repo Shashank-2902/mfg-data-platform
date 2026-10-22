@@ -3,10 +3,13 @@
 Needs the stack running: docker compose --profile demo up -d --build
     python benchmark/live_fault_test.py
 
-For every fault it reports how long the monitor needed to open an incident,
-whether the alert reached n8n, and how many readings were lost (should be 0).
+Every fault and the clean run are repeated RUNS times. For each one it reports
+the run length, how long the monitor needed to open an incident (mean, minimum,
+maximum), false alarms and how many readings were lost (should be 0).
 """
+import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -22,6 +25,8 @@ import env_file  # noqa: E402
 import fault_injector  # noqa: E402
 import message_builder  # noqa: E402
 
+RUNS = 5
+SAVE_FILE = os.path.join(HERE, "results", "live_runs.jsonl")
 ROWS = 1000
 RATE = 10
 FAULT_START_ROW = 200
@@ -74,7 +79,9 @@ def measure(conn, fault):
     time.sleep(3)  # let the last messages arrive
 
     stored = conn.execute("SELECT count(*) FROM raw_readings").fetchone()[0]
-    result = {"fault": fault, "rows_lost": expected_rows(fault) - stored}
+    first, last = conn.execute("SELECT min(received_at), max(received_at) FROM raw_readings").fetchone()
+    result = {"fault": fault, "rows_lost": expected_rows(fault) - stored,
+              "run_seconds": (last - first).total_seconds()}
     started = fault_start_time(conn)
 
     if fault == "none":
@@ -95,19 +102,81 @@ def measure(conn, fault):
     return result
 
 
-def main():
-    conn = psycopg.connect(env_file.database_url(), autocommit=True)
-    results = []
-    for fault in ["none", "silence", "sensor_stuck", "out_of_range"]:
-        print(f"Running fault: {fault} ...", flush=True)
-        results.append(measure(conn, fault))
+def summarize(fault, runs):
+    delays = [r["delay"] for r in runs if r.get("delay") is not None]
+    summary = {
+        "fault": fault,
+        "runs": len(runs),
+        "run_seconds": statistics.mean(r["run_seconds"] for r in runs),
+        "false_alarms": sum(r["false_alarms"] for r in runs),
+        "rows_lost": sum(r["rows_lost"] for r in runs),
+        "detected": len(delays),
+    }
+    if delays:
+        summary.update(mean=statistics.mean(delays), low=min(delays), high=max(delays))
+    return summary
 
+
+def print_table(summaries):
     print()
-    print("| Fault | Detection delay | False alarms | Rows lost |")
-    print("| --- | --- | --- | --- |")
-    for r in results:
-        delay = "-" if r["fault"] == "none" else ("not detected" if r["delay"] is None else f"{r['delay']} s")
-        print(f"| {r['fault']} | {delay} | {r['false_alarms']} | {r['rows_lost']} |")
+    print("| Fault | Runs | Run length | Detected | Delay mean | Delay min | Delay max | False alarms | Rows lost |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for s in summaries:
+        length = f"{ROWS} rows, {s['run_seconds']:.0f} s"
+        if s["fault"] == "none":
+            delays = "- | - | -"
+            detected = "-"
+        else:
+            detected = f"{s['detected']}/{s['runs']}"
+            delays = f"{s['mean']:.1f} s | {s['low']:.1f} s | {s['high']:.1f} s" if s["detected"] else "- | - | -"
+        print(f"| {s['fault']} | {s['runs']} | {length} | {detected} | {delays} | {s['false_alarms']} | {s['rows_lost']} |")
+
+
+def is_valid(run):
+    """A run that took far longer than the replay (for example the laptop slept) is thrown away."""
+    return run["run_seconds"] < ROWS / RATE * 1.5
+
+
+def load_saved_runs():
+    """Runs finished in an earlier start of this script, so a stop does not lose them."""
+    saved = {}
+    if os.path.exists(SAVE_FILE):
+        with open(SAVE_FILE, encoding="utf-8") as f:
+            for line in f:
+                run = json.loads(line)
+                if is_valid(run):
+                    saved.setdefault(run["fault"], []).append(run)
+    return saved
+
+
+def save_run(run):
+    os.makedirs(os.path.dirname(SAVE_FILE), exist_ok=True)
+    with open(SAVE_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(run) + "\n")
+
+
+def main():
+    """Run python benchmark/live_fault_test.py again after a stop to carry on.
+    Use --fresh to delete the saved runs and start from zero."""
+    if "--fresh" in sys.argv and os.path.exists(SAVE_FILE):
+        os.remove(SAVE_FILE)
+    saved = load_saved_runs()
+
+    conn = psycopg.connect(env_file.database_url(), autocommit=True)
+    summaries = []
+    for fault in ["none", "silence", "sensor_stuck", "out_of_range"]:
+        runs = saved.get(fault, [])[:RUNS]
+        while len(runs) < RUNS:
+            print(f"Fault {fault}, run {len(runs) + 1} of {RUNS} ...", flush=True)
+            run = measure(conn, fault)
+            if is_valid(run):
+                save_run(run)
+                runs.append(run)
+            else:
+                print(f"  run took {run['run_seconds']:.0f} s, thrown away and repeated", flush=True)
+        summaries.append(summarize(fault, runs))
+
+    print_table(summaries)
 
 
 if __name__ == "__main__":

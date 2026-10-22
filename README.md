@@ -8,7 +8,10 @@ and Telegram when a sensor breaks.
 **Data note: public data, synthetic timing.** The readings come from the public
 UCI AI4I 2020 dataset. That dataset has no timestamps and no machine ids, so the
 replayer invents both: the rows are shared between five machines and each row is
-10 seconds after the previous one. This project is a rebuild of a pattern on public
+10 seconds after the previous one. The machine ids M1 to M5 are assigned by the
+replayer, so differences between machines in the dashboard are not real. The faults
+used in the tests and benchmarks are simulated by my own replayer and found by my own
+monitor. This project is a rebuild of a pattern on public
 data. It is not a production system and makes no claim about a real plant.
 
 ## How it works
@@ -31,7 +34,7 @@ flowchart LR
 | --- | --- |
 | `replayer/` | Reads the CSV and publishes one reading at a time at a fixed rate. Can inject faults. |
 | `ingest/` | Subscribes to MQTT, checks the shape of each message and stores it. Repeated readings are stored once. |
-| `monitor/` | Looks for silent machines, stuck values and out-of-range values. Writes alerts to an outbox table and delivers them to n8n, retrying if n8n is down. |
+| `monitor/` | Looks for silent machines, stuck sensors (torque, rotational speed, process temperature) and out-of-range values. Writes alerts to an outbox table and delivers them to n8n, retrying if n8n is down. |
 | `dbt/` | Cleans the raw data and builds three KPI tables, with tests. |
 | `n8n/workflows/` | The alert flow, exported as JSON without secrets. n8n only delivers; all decisions are made in tested Python or dbt. |
 | `grafana/` | Data source and dashboard, provisioned from files. |
@@ -118,7 +121,7 @@ starts 30 seconds into a 200 second replay at 10 messages per second.
 
 The baseline cannot see a frozen or broken sensor that keeps sending data. The
 monitor finds a broken value at its next check (every 5 seconds) and a frozen
-sensor once ten identical readings have arrived. Silence needs the full 60 second
+sensor (torque, rotational speed or process temperature) once ten identical readings have arrived. Silence needs the full 60 second
 limit, so both methods are equally fast there. In the simulation, checks happen at
 fixed 5 second steps; on the real stack they start at a random moment, so the real
 delays differ by a few seconds.
@@ -127,23 +130,32 @@ delays differ by a few seconds.
 
 Run with `python benchmark/live_fault_test.py`. Each run replays 1000 readings
 through MQTT, Postgres, the monitor and n8n. The delay is measured from the row
-where the fault starts to the moment the incident is written by n8n.
+where the fault starts to the moment the incident is written by n8n. Every fault
+and the clean run were repeated 5 times. The script saves each finished run, so it
+can be stopped and started again. Raw runs: `benchmark/results/live_runs.jsonl`.
+`python benchmark/summarise_runs.py` prints this table from that file.
 
-| Fault | Detection delay | False alarms | Rows lost |
-| --- | --- | --- | --- |
-| none (clean run) | - | 0 | 0 |
-| silence (M3 stops sending) | 63.8 s | 0 | 0 |
-| sensor_stuck (M2 torque frozen) | 10.9 s | 0 | 0 |
-| out_of_range (M4 air temperature 0 K) | 1.8 s | 0 | 0 |
+| Fault | Runs | Run length | Detected | Delay mean | Delay min | Delay max | False alarms | Rows lost |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| none (clean run) | 5 | 1000 rows, 100 s | - | - | - | - | 0 | 0 |
+| silence (M3 stops sending) | 5 | 1000 rows, 100 s | 5/5 | 64.1 s | 60.0 s | 67.0 s | 0 | 0 |
+| sensor_stuck (M2 torque frozen) | 5 | 1000 rows, 100 s | 5/5 | 7.7 s | 6.9 s | 8.5 s | 0 | 0 |
+| out_of_range (M4 air temperature 0 K) | 5 | 1000 rows, 100 s | 5/5 | 3.8 s | 1.0 s | 5.4 s | 0 | 0 |
 
-Rows lost is the number of readings that should have reached the database minus
-the number that did. It is 0 in every run.
+Thresholds used: `SILENCE_SECONDS` = 60, `STUCK_COUNT` = 10, `CHECK_EVERY_SECONDS` = 5.
+False alarms and rows lost are totals over the 5 runs of each row. Rows lost is the
+number of readings that should have reached the database minus the number that did.
+
+The faults are simulated by my own replayer and found by my own monitor, so these
+numbers show that the pipeline works as designed. They say nothing about how well it
+would find faults in a real plant.
 
 ### Data quality finding
 
 dbt reports 27 rows in the public dataset where the failure flag and the failure
 modes disagree (9 rows with a failure but no mode, 18 with a mode but no failure).
-The data is kept as it is and the test only warns.
+The data is kept as it is and the test only warns. A fresh `dbt build` on the full
+10,000 rows gives: 14 tests pass, 1 warning, 4 models built.
 
 ## Design choices
 
@@ -151,7 +163,8 @@ The data is kept as it is and the test only warns.
   repeats, so a message delivered twice or a replayed file does not create duplicates.
 - **Outbox pattern.** Alerts are written to a table first and delivered afterwards.
   If n8n is down, ingestion is not affected and alerts are retried with backoff.
-  There is a test for this rule.
+  There is a test for this rule. That test calls the handler in the same process;
+  the live run on the real stack shows the same with separate containers.
 - **n8n at the edge.** Checks, dedupe keys and retries live in tested code. n8n
   receives an alert, logs it, sends the message and marks it delivered.
 - **Ingest checks shape, the monitor judges values.** A reading of 0 Kelvin is
@@ -164,8 +177,17 @@ The data is kept as it is and the test only warns.
 - Downtime is an estimate: each failure counts as 30 minutes (`minutes_per_failure`
   in `dbt/dbt_project.yml`).
 - The local broker allows anonymous connections. Do not expose it to the internet.
-- The monitor checks readings received in the last hour. A machine that stays silent
-  for longer than that drops out of the check and its incident is closed.
+- The stuck check covers torque, rotational speed and process temperature. Air
+  temperature is left out: it has only 93 distinct values in the dataset and one machine
+  repeats the same value 10 times in a row, which would be a false alarm.
+- When a replay ends, every machine counts as silent and raises a silence incident
+  after `SILENCE_SECONDS` (60 s), so the demo sends one alert per machine shortly
+  after it finishes. This is expected. In a test run (200 rows at 50 per second, demo
+  profile) five silence incidents, M1 to M5, were open about 70 seconds after the
+  replay ended and all five alerts were delivered. The benchmark counts false alarms
+  only during the run.
+- The silence check knows a machine only after it has sent at least one reading. A
+  machine that never sent anything is not reported.
 - The alert channel was tested with a local fake of the Telegram API. A real bot
   needs your own token, as described above.
 

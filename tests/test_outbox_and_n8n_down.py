@@ -131,7 +131,8 @@ def test_ingestion_keeps_working_while_n8n_is_down(conn):
 
     # More readings arrive while n8n is still down. All of them are stored.
     for second in range(20):
-        message = make_message("M1", event_time=f"2026-01-01T00:00:{second:02d}+00:00", torque_nm=40.0 + second)
+        message = make_message("M1", event_time=f"2026-01-01T00:00:{second:02d}+00:00", torque_nm=40.0 + second,
+                               rotational_speed_rpm=1500 + second, process_temp_k=308.0 + second / 10)
         assert handler.handle_payload(conn, json.dumps(message).encode()) == "saved"
     assert count(conn, "raw_readings", "machine_id = 'M1'") == 20
 
@@ -154,3 +155,39 @@ def test_incident_is_closed_when_the_problem_is_gone(conn):
     )
     runner.run_once(conn, send_to(DEAD_URL))  # there is no data at all, so no problem is active
     assert count(conn, "incidents", "status = 'resolved'") == 1
+
+
+def insert_reading_received(conn, machine_id, interval):
+    """Store one reading that the database received `interval` ago, e.g. '2 hours'."""
+    conn.execute(
+        "INSERT INTO raw_readings (machine_id, event_time, received_at, udi, product_type, air_temp_k, "
+        "process_temp_k, rotational_speed_rpm, torque_nm, tool_wear_min, machine_failure, twf, hdf, pwf, "
+        "osf, rnf) VALUES (%s, now() - %s::interval, now() - %s::interval, 1, 'M', 298, 308, 1500, 40, "
+        "0, 0, 0, 0, 0, 0, 0)",
+        (machine_id, interval, interval),
+    )
+
+
+def test_a_machine_silent_for_two_hours_keeps_its_open_incident(conn):
+    insert_reading_received(conn, "M3", "2 hours")
+    conn.execute(
+        "INSERT INTO incidents (machine_id, incident_type, severity, message) VALUES ('M3', 'silence', 'high', 'x')"
+    )
+    runner.run_once(conn, send_to(DEAD_URL))
+    runner.run_once(conn, send_to(DEAD_URL))
+    assert count(conn, "incidents", "status = 'open'") == 1
+    assert count(conn, "incidents", "status = 'resolved'") == 0
+
+
+def test_the_silence_incident_resolves_when_new_data_arrives(conn):
+    insert_reading_received(conn, "M3", "2 hours")
+    conn.execute(
+        "INSERT INTO incidents (machine_id, incident_type, severity, message) VALUES ('M3', 'silence', 'high', 'x')"
+    )
+    runner.run_once(conn, send_to(DEAD_URL))
+    assert count(conn, "incidents", "status = 'open'") == 1
+
+    insert_reading_received(conn, "M3", "1 second")
+    runner.run_once(conn, send_to(DEAD_URL))
+    assert count(conn, "incidents", "status = 'resolved'") == 1
+    assert count(conn, "incidents", "status = 'open'") == 0

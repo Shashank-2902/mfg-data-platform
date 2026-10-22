@@ -3,13 +3,19 @@ import os
 # No data for longer than this many seconds counts as silence.
 SILENCE_SECONDS = int(os.getenv("SILENCE_SECONDS", "60"))
 
-# This many identical torque values in a row count as a stuck sensor.
+# This many identical values in a row count as a stuck sensor.
 STUCK_COUNT = int(os.getenv("STUCK_COUNT", "10"))
+
+# Sensors the stuck check looks at. air_temp_k is left out on purpose: it has only
+# 93 distinct values in the AI4I data and one machine repeats the same value 10
+# times in a row, which would be a false alarm.
+STUCK_SENSORS = ["torque_nm", "rotational_speed_rpm", "process_temp_k"]
 
 # How often the monitor looks at the data.
 CHECK_EVERY_SECONDS = int(os.getenv("CHECK_EVERY_SECONDS", "5"))
 
-# Only readings received within this many minutes are looked at.
+# The stuck and range checks only look at readings received within this many
+# minutes. The silence check does not use it: it looks at the whole history.
 LOOKBACK_MINUTES = int(os.getenv("LOOKBACK_MINUTES", "60"))
 
 # Allowed range for each value. Wide on purpose: they only catch broken sensors.
