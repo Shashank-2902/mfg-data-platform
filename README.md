@@ -5,6 +5,10 @@ readings are sent over MQTT, stored in a time-series database, turned into KPIs
 with dbt, shown in Grafana, and watched by a monitor that sends alerts through n8n
 and Telegram when a sensor breaks.
 
+![Grafana dashboard](docs/img/grafana_dashboard.png)
+
+*Grafana dashboard (public AI4I data, loaded with `scripts/load_sample.py`)*
+
 **Data note: public data, synthetic timing.** The readings come from the public
 UCI AI4I 2020 dataset. That dataset has no timestamps and no machine ids, so the
 replayer invents both: the rows are shared between five machines and each row is
@@ -156,9 +160,8 @@ were run on 22 Oct 2026 against the fake server.
    `python scripts/make_n8n_credentials.py` and `docker compose up -d --force-recreate n8n`,
    and remove the variable with `Remove-Item Env:FAKE_TELEGRAM_FAIL_FIRST`.
 
-Before the retry change, the real bot was checked by hand once. After the retry change, the
-real bot was checked by hand on 22 Oct 2026: the out-of-range alert arrived with the sensor
-name and its underscores intact.
+Before the retry change, the real bot was checked by hand once. The retry change and the
+new alert text have not been checked on the real bot yet.
 
 ### Tests
 
