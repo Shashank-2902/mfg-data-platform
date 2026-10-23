@@ -85,6 +85,13 @@ sends the message. With the demo profile you can read it with
 `docker compose logs fake-telegram`. Incidents show in the dashboard and in the
 `incidents` table.
 
+![Alert on Telegram](docs/img/telegram_alert.png)
+
+*Alert received on a real Telegram bot*
+
+The first message is the out-of-range alert. The next five arrive about a minute after the
+replay ended, one silence alert per machine.
+
 ### Use a real Telegram bot
 
 1. Create a bot with @BotFather and copy the token.
@@ -160,8 +167,9 @@ were run on 22 Oct 2026 against the fake server.
    `python scripts/make_n8n_credentials.py` and `docker compose up -d --force-recreate n8n`,
    and remove the variable with `Remove-Item Env:FAKE_TELEGRAM_FAIL_FIRST`.
 
-Before the retry change, the real bot was checked by hand once. The retry change and the
-new alert text have not been checked on the real bot yet.
+Before the retry change, the real bot was checked by hand once. After the retry change, the
+real bot was checked by hand on 22 Oct 2026: the out-of-range alert arrived with the sensor
+name and its underscores intact, and each silence alert arrived once.
 
 ### Tests
 
@@ -270,8 +278,8 @@ The data is kept as it is and the test only warns. A fresh `dbt build` on the fu
   only during the run.
 - The silence check knows a machine only after it has sent at least one reading. A
   machine that never sent anything is not reported.
-- Before the retry change, the alert channel was tested once by hand with a real
-  Telegram bot on 22 Oct 2026: the out-of-range alert and the silence alerts arrived. The
+- The alert channel was tested by hand with a real Telegram bot on 22 Oct 2026, before and
+  after the retry change: the out-of-range alert and the silence alerts arrived. The
   automated tests, the benchmark and the failure test below use the fake Telegram server,
   and the real Telegram call is not part of CI.
 
